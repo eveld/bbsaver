@@ -6,7 +6,6 @@ mod pack;
 mod renderer;
 mod sauce;
 
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -27,9 +26,9 @@ use renderer::Renderer;
 #[derive(Parser)]
 #[command(name = "bbsaver", about = "ANSI art pack screensaver")]
 struct Cli {
-    /// Path to art pack (directory or ZIP file)
+    /// Path or URL to art pack (directory, ZIP file, or https://...)
     #[arg(long)]
-    pack: PathBuf,
+    pack: String,
 
     /// Simulated baud rate
     #[arg(long, default_value_t = 9600)]
@@ -49,7 +48,7 @@ struct App {
     rows_per_sec: f64,
     last_frame: Option<Instant>,
     fullscreen: bool,
-    pack_path: PathBuf,
+    pack: String,
 }
 
 struct GpuState {
@@ -60,7 +59,7 @@ struct GpuState {
 }
 
 impl App {
-    fn new(pack_path: PathBuf, baud: u32, fullscreen: bool) -> Self {
+    fn new(pack: String, baud: u32, fullscreen: bool) -> Self {
         let rows_per_sec = baud as f64 / 10.0 / 80.0;
         Self {
             window: None,
@@ -71,7 +70,7 @@ impl App {
             rows_per_sec,
             last_frame: None,
             fullscreen,
-            pack_path,
+            pack,
         }
     }
 }
@@ -98,7 +97,7 @@ impl ApplicationHandler for App {
 
         // Load pack now that we know the viewport size
         let viewport_rows = Renderer::viewport_rows(gpu.config.width, gpu.config.height);
-        self.rows = pack::load_pack(&self.pack_path, viewport_rows);
+        self.rows = pack::load_pack(&self.pack, viewport_rows);
 
         eprintln!("Total {} rows, rows/sec={:.1}", self.rows.len(), self.rows_per_sec);
 

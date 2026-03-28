@@ -11,14 +11,20 @@ struct ArtFile {
     rows: Vec<Row>,
 }
 
-/// Load an art pack from a directory or ZIP file path.
+/// Load an art pack from a local path (directory or ZIP) or a URL.
 /// `viewport_rows` is the number of rows visible on screen, used to pad between pieces
 /// so each one scrolls fully off before the next appears.
-pub fn load_pack(path: &Path, viewport_rows: usize) -> Vec<Row> {
-    let files = if path.is_dir() {
-        load_directory(path)
+pub fn load_pack(pack: &str, viewport_rows: usize) -> Vec<Row> {
+    let files = if pack.starts_with("http://") || pack.starts_with("https://") {
+        let path = download_pack(pack);
+        load_zip(&path)
     } else {
-        load_zip(path)
+        let path = Path::new(pack);
+        if path.is_dir() {
+            load_directory(path)
+        } else {
+            load_zip(path)
+        }
     };
 
     if files.is_empty() {
@@ -102,6 +108,23 @@ fn load_zip(path: &Path) -> Vec<ArtFile> {
     }
 
     files
+}
+
+/// Download a ZIP pack from a URL to a temp file, return the path.
+fn download_pack(url: &str) -> std::path::PathBuf {
+    eprintln!("Downloading {}", url);
+
+    let resp = ureq::get(url).call().expect("Failed to download pack");
+
+    let mut body = resp.into_body();
+    let mut tmp = tempfile::NamedTempFile::new().expect("Failed to create temp file");
+    std::io::copy(&mut body.as_reader(), &mut tmp).expect("Failed to write download");
+
+    let path = tmp.into_temp_path();
+    let owned = path.to_path_buf();
+    // Keep the file alive by leaking the TempPath (cleaned up on process exit)
+    std::mem::forget(path);
+    owned
 }
 
 fn is_blank_row(row: &Row) -> bool {
