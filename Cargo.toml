@@ -1,0 +1,18 @@
+[package]
+name = "bbsaver"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+wgpu = "29"
+winit = "0.30"
+clap = { version = "4", features = ["derive"] }
+zip = "2"
+image = "0.25"
+pollster = "0.4"
+bytemuck = { version = "1", features = ["derive"] }
+env_logger = "0.11"
+log = "0.4"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
