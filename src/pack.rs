@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crate::ansi;
-use crate::cell::{blank_row, resize_row, Cell, Row};
+use crate::cell::{blank_row, Cell, Row};
 use crate::sauce;
 
 /// A loaded art file with its parsed content and metadata.

@@ -21,7 +21,3 @@ pub fn blank_row(cols: usize) -> Row {
     vec![Cell::BLANK; cols]
 }
 
-/// Pad or truncate a row to a target width.
-pub fn resize_row(row: &mut Row, cols: usize) {
-    row.resize(cols, Cell::BLANK);
-}
