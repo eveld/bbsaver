@@ -17,6 +17,8 @@ struct Uniforms {
     cell_size: [f32; 2],
     scroll_offset: f32,
     margin_left: f32,
+    margin_top: f32,
+    _pad: f32,
 }
 
 pub struct Renderer {
@@ -172,32 +174,31 @@ impl Renderer {
         }
     }
 
-    /// Calculate cell size and horizontal margin.
-    /// Sizes cells so the art fills the screen height, then centers horizontally.
-    /// Returns (cell_w, cell_h, margin_left).
-    pub fn layout(window_width: u32, window_height: u32, cols: usize) -> (f32, f32, f32) {
+    /// Calculate cell size and margins.
+    /// Cell size is derived from `reference_width` (the narrowest screen) so that
+    /// the art fills that screen edge-to-edge.  Wider screens get centered black bars.
+    /// Vertically, only whole rows are shown, centered with equal top/bottom margins.
+    /// Returns (cell_w, cell_h, margin_left, margin_top).
+    pub fn layout(
+        window_width: u32,
+        window_height: u32,
+        reference_width: u32,
+        cols: usize,
+    ) -> (f32, f32, f32, f32) {
         let cols_f = cols as f32;
-        // Target ~40 visible rows to determine cell height from window height
-        let target_rows = 40.0;
-        let cell_h = window_height as f32 / target_rows;
-        let cell_w = cell_h / 2.0; // 8:16 aspect ratio
-
-        // If art would be wider than window, fall back to width-based sizing
+        let cell_w = reference_width as f32 / cols_f;
+        let cell_h = cell_w * 2.0; // 8:16 aspect ratio
         let art_width = cell_w * cols_f;
-        if art_width > window_width as f32 {
-            let cell_w = window_width as f32 / cols_f;
-            let cell_h = cell_w * 2.0;
-            return (cell_w, cell_h, 0.0);
-        }
-
         let margin_left = (window_width as f32 - art_width) / 2.0;
-        (cell_w, cell_h, margin_left)
+        let visible_rows = (window_height as f32 / cell_h).floor();
+        let margin_top = (window_height as f32 - visible_rows * cell_h) / 2.0;
+        (cell_w, cell_h, margin_left.max(0.0), margin_top)
     }
 
-    /// How many rows fit in the viewport.
-    pub fn viewport_rows(window_width: u32, window_height: u32, cols: usize) -> usize {
-        let (_, cell_h, _) = Self::layout(window_width, window_height, cols);
-        (window_height as f32 / cell_h).ceil() as usize + 1
+    /// How many whole rows fit in the viewport.
+    pub fn viewport_rows(window_height: u32, reference_width: u32, cols: usize) -> usize {
+        let (_, cell_h, _, _) = Self::layout(reference_width, window_height, reference_width, cols);
+        (window_height as f32 / cell_h).floor() as usize + 1
     }
 
     /// Render visible rows of the row buffer.
@@ -211,13 +212,15 @@ impl Renderer {
         cols: usize,
         scroll_offset: f64,
         window_size: [u32; 2],
+        reference_width: u32,
     ) {
         if rows.is_empty() {
             return;
         }
 
-        let (cell_w, cell_h, margin_left) = Self::layout(window_size[0], window_size[1], cols);
-        let viewport_rows = Self::viewport_rows(window_size[0], window_size[1], cols);
+        let (cell_w, cell_h, margin_left, margin_top) =
+            Self::layout(window_size[0], window_size[1], reference_width, cols);
+        let viewport_rows = Self::viewport_rows(window_size[1], reference_width, cols);
 
         let first_row = scroll_offset.floor() as usize;
         let frac = scroll_offset - scroll_offset.floor();
@@ -244,6 +247,8 @@ impl Renderer {
             cell_size: [cell_w, cell_h],
             scroll_offset: frac as f32,
             margin_left,
+            margin_top,
+            _pad: 0.0,
         };
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
 
@@ -275,6 +280,13 @@ impl Renderer {
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.bind_group, &[]);
             pass.set_vertex_buffer(0, self.instance_buffer.slice(..));
+
+            // Clip to the area containing whole rows so partial rows don't peek through
+            let visible_rows = (window_size[1] as f32 / cell_h).floor();
+            let clip_h = (visible_rows * cell_h) as u32;
+            let clip_y = margin_top as u32;
+            pass.set_scissor_rect(0, clip_y, window_size[0], clip_h.min(window_size[1] - clip_y));
+
             pass.draw(0..6, 0..instance_count as u32);
         }
     }

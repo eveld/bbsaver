@@ -66,6 +66,7 @@ struct App {
     // Shared content
     rows: Vec<Row>,
     cols: usize,
+    reference_width: u32,
 
     // Scroll state
     scroll_offset: f64,
@@ -90,6 +91,7 @@ impl App {
             windows: HashMap::new(),
             rows: Vec::new(),
             cols: 80,
+            reference_width: 0,
             scroll_offset: 0.0,
             row_accumulator: 0.0,
             rows_per_sec,
@@ -172,14 +174,26 @@ impl ApplicationHandler for App {
             self.init_gpu_and_windows(&instance, vec![window]);
         }
 
-        // Load pack using the first window's size for viewport calculation
-        if let Some(first) = self.windows.values().next() {
-            let viewport_rows =
-                Renderer::viewport_rows(first.config.width, first.config.height, 80);
-            let pack_data = pack::load_pack(&self.pack, viewport_rows);
-            self.rows = pack_data.rows;
-            self.cols = pack_data.cols;
-        }
+        // Cell size is derived from the narrowest screen so art fills it edge-to-edge.
+        // Wider screens get centered black bars.
+        self.reference_width = self
+            .windows
+            .values()
+            .map(|ws| ws.config.width)
+            .min()
+            .unwrap_or(800);
+
+        // For pack loading, use the tallest screen's height to ensure enough rows
+        let max_height = self
+            .windows
+            .values()
+            .map(|ws| ws.config.height)
+            .max()
+            .unwrap_or(600);
+        let viewport_rows = Renderer::viewport_rows(max_height, self.reference_width, 80);
+        let pack_data = pack::load_pack(&self.pack, viewport_rows);
+        self.rows = pack_data.rows;
+        self.cols = pack_data.cols;
 
         eprintln!(
             "{} monitor(s), {} rows, {} cols, rows/sec={:.1}",
@@ -251,7 +265,15 @@ impl ApplicationHandler for App {
                 if let (Some(device), Some(queue), Some(ws)) =
                     (&self.device, &self.queue, self.windows.get(&id))
                 {
-                    render_window(device, queue, ws, &self.rows, self.cols, self.scroll_offset);
+                    render_window(
+                        device,
+                        queue,
+                        ws,
+                        &self.rows,
+                        self.cols,
+                        self.scroll_offset,
+                        self.reference_width,
+                    );
                 }
 
                 // Request redraw on all windows
@@ -343,6 +365,7 @@ fn render_window(
     rows: &[Row],
     cols: usize,
     scroll_offset: f64,
+    reference_width: u32,
 ) {
     let output = match ws.surface.get_current_texture() {
         wgpu::CurrentSurfaceTexture::Success(tex)
@@ -366,6 +389,7 @@ fn render_window(
         cols,
         scroll_offset,
         [ws.config.width, ws.config.height],
+        reference_width,
     );
 
     queue.submit(std::iter::once(encoder.finish()));
