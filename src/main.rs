@@ -48,6 +48,7 @@ struct App {
     gpu: Option<GpuState>,
     renderer: Option<Renderer>,
     rows: Vec<Row>,
+    cols: usize,
     scroll_offset: f64,
     row_accumulator: f64,
     rows_per_sec: f64,
@@ -72,6 +73,7 @@ impl App {
             gpu: None,
             renderer: None,
             rows: Vec::new(),
+            cols: 80,
             scroll_offset: 0.0,
             row_accumulator: 0.0,
             rows_per_sec,
@@ -104,10 +106,13 @@ impl ApplicationHandler for App {
         let renderer = Renderer::new(&gpu.device, gpu.config.format, registry.default());
 
         // Load pack now that we know the viewport size
-        let viewport_rows = Renderer::viewport_rows(gpu.config.width, gpu.config.height);
-        self.rows = pack::load_pack(&self.pack, viewport_rows);
+        // Use 80 cols for initial viewport calc; will be updated after pack loads
+        let viewport_rows = Renderer::viewport_rows(gpu.config.width, gpu.config.height, 80);
+        let pack_data = pack::load_pack(&self.pack, viewport_rows);
+        self.rows = pack_data.rows;
+        self.cols = pack_data.cols;
 
-        eprintln!("Total {} rows, rows/sec={:.1}", self.rows.len(), self.rows_per_sec);
+        eprintln!("Total {} rows, {} cols, rows/sec={:.1}", self.rows.len(), self.cols, self.rows_per_sec);
 
         self.gpu = Some(gpu);
         self.renderer = Some(renderer);
@@ -165,7 +170,7 @@ impl ApplicationHandler for App {
                 }
 
                 if let (Some(gpu), Some(renderer)) = (&self.gpu, &self.renderer) {
-                    render_frame(gpu, renderer, &self.rows, self.scroll_offset);
+                    render_frame(gpu, renderer, &self.rows, self.cols, self.scroll_offset);
                 }
                 if let Some(window) = &self.window {
                     window.request_redraw();
@@ -224,7 +229,7 @@ async fn init_gpu(window: Arc<Window>) -> GpuState {
     }
 }
 
-fn render_frame(gpu: &GpuState, renderer: &Renderer, rows: &[Row], scroll_offset: f64) {
+fn render_frame(gpu: &GpuState, renderer: &Renderer, rows: &[Row], cols: usize, scroll_offset: f64) {
     let output = match gpu.surface.get_current_texture() {
         wgpu::CurrentSurfaceTexture::Success(tex)
         | wgpu::CurrentSurfaceTexture::Suboptimal(tex) => tex,
@@ -246,6 +251,7 @@ fn render_frame(gpu: &GpuState, renderer: &Renderer, rows: &[Row], scroll_offset
         &view,
         &mut encoder,
         rows,
+        cols,
         scroll_offset,
         [gpu.config.width, gpu.config.height],
     );

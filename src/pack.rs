@@ -1,20 +1,27 @@
 use std::path::Path;
 
 use crate::ansi;
-use crate::cell::{blank_row, Cell, Row};
+use crate::cell::{blank_row, resize_row, Cell, Row};
 use crate::sauce;
 
 /// A loaded art file with its parsed content and metadata.
 struct ArtFile {
     filename: String,
+    cols: usize,
     sauce: Option<sauce::SauceRecord>,
     rows: Vec<Row>,
+}
+
+/// Result of loading a pack: all rows plus the column width.
+pub struct Pack {
+    pub rows: Vec<Row>,
+    pub cols: usize,
 }
 
 /// Load an art pack from a local path (directory or ZIP) or a URL.
 /// `viewport_rows` is the number of rows visible on screen, used to pad between pieces
 /// so each one scrolls fully off before the next appears.
-pub fn load_pack(pack: &str, viewport_rows: usize) -> Vec<Row> {
+pub fn load_pack(pack: &str, viewport_rows: usize) -> Pack {
     let files = if pack.starts_with("http://") || pack.starts_with("https://") {
         let path = download_pack(pack);
         load_zip(&path)
@@ -29,21 +36,42 @@ pub fn load_pack(pack: &str, viewport_rows: usize) -> Vec<Row> {
 
     if files.is_empty() {
         eprintln!("Warning: no .ANS/.ICE files found in pack");
-        return Vec::new();
+        return Pack {
+            rows: Vec::new(),
+            cols: 80,
+        };
     }
 
-    eprintln!("Loaded {} files from pack", files.len());
+    // Find the max width across all files
+    let max_cols = files.iter().map(|f| f.cols).max().unwrap_or(80);
+
+    eprintln!("Loaded {} files from pack ({}cols)", files.len(), max_cols);
 
     let mut all_rows = Vec::new();
     for file in &files {
-        all_rows.push(attribution_row(&file.filename, &file.sauce));
-        all_rows.extend_from_slice(&file.rows);
+        all_rows.push(attribution_row(&file.filename, &file.sauce, max_cols));
+
+        // Center narrower files within the max width
+        let left_pad = (max_cols - file.cols) / 2;
+        for row in &file.rows {
+            let mut padded = blank_row(max_cols);
+            for (i, cell) in row.iter().enumerate() {
+                if left_pad + i < max_cols {
+                    padded[left_pad + i] = *cell;
+                }
+            }
+            all_rows.push(padded);
+        }
+
         for _ in 0..viewport_rows {
-            all_rows.push(blank_row());
+            all_rows.push(blank_row(max_cols));
         }
     }
 
-    all_rows
+    Pack {
+        rows: all_rows,
+        cols: max_cols,
+    }
 }
 
 /// Load .ANS/.ICE files from a directory, sorted alphabetically.
@@ -87,7 +115,7 @@ fn load_zip(path: &Path) -> Vec<ArtFile> {
 
     let mut files = Vec::new();
     let mut total_bytes: u64 = 0;
-    const MAX_BYTES: u64 = 64 * 1024 * 1024; // 64MB decompressed limit
+    const MAX_BYTES: u64 = 64 * 1024 * 1024;
 
     for name in &names {
         if let Ok(mut entry) = archive.by_name(name) {
@@ -101,7 +129,6 @@ fn load_zip(path: &Path) -> Vec<ArtFile> {
             let mut data = Vec::with_capacity(size as usize);
             std::io::Read::read_to_end(&mut entry, &mut data).ok();
 
-            // Use just the filename, not the full path inside the ZIP
             let filename = name.rsplit('/').next().unwrap_or(name).to_string();
             files.push(parse_art_file(filename, data));
         }
@@ -122,7 +149,6 @@ fn download_pack(url: &str) -> std::path::PathBuf {
 
     let path = tmp.into_temp_path();
     let owned = path.to_path_buf();
-    // Keep the file alive by leaking the TempPath (cleaned up on process exit)
     std::mem::forget(path);
     owned
 }
@@ -139,7 +165,15 @@ fn is_ansi_file(name: &str) -> bool {
 fn parse_art_file(filename: String, data: Vec<u8>) -> ArtFile {
     let sauce_record = sauce::parse_sauce(&data);
     let content = sauce::strip_sauce(&data);
-    let mut rows = ansi::parse_ansi(content);
+
+    // Use SAUCE width if available, otherwise default to 80
+    let cols = sauce_record
+        .as_ref()
+        .map(|s| s.width as usize)
+        .filter(|&w| w > 0)
+        .unwrap_or(80);
+
+    let mut rows = ansi::parse_ansi(content, cols);
 
     // Trim leading blank rows
     let first_nonblank = rows.iter().position(|r| !is_blank_row(r)).unwrap_or(0);
@@ -152,13 +186,14 @@ fn parse_art_file(filename: String, data: Vec<u8>) -> ArtFile {
 
     ArtFile {
         filename,
+        cols,
         sauce: sauce_record,
         rows,
     }
 }
 
 /// Create an attribution row: --- "Title" by Author / Group ---
-fn attribution_row(filename: &str, sauce: &Option<sauce::SauceRecord>) -> Row {
+fn attribution_row(filename: &str, sauce: &Option<sauce::SauceRecord>, cols: usize) -> Row {
     let text = match sauce {
         Some(s) if !s.title.is_empty() || !s.author.is_empty() => {
             let title = if s.title.is_empty() { filename } else { &s.title };
@@ -172,31 +207,31 @@ fn attribution_row(filename: &str, sauce: &Option<sauce::SauceRecord>) -> Row {
         _ => format!(" {} ", filename),
     };
 
-    let mut row = blank_row();
+    let mut row = blank_row(cols);
 
-    // Fill with dashes, then place text centered
+    // Fill with dashes
     for cell in row.iter_mut() {
         *cell = Cell {
-            glyph: 0xC4, // horizontal box-drawing char
-            fg: 8,        // dark gray
+            glyph: 0xC4,
+            fg: 8,
             bg: 0,
         };
     }
 
     // Center the text
     let text_bytes: Vec<u8> = text.bytes().collect();
-    let start = if text_bytes.len() < 80 {
-        (80 - text_bytes.len()) / 2
+    let start = if text_bytes.len() < cols {
+        (cols - text_bytes.len()) / 2
     } else {
         0
     };
 
     for (i, &b) in text_bytes.iter().enumerate() {
         let col = start + i;
-        if col < 80 {
+        if col < cols {
             row[col] = Cell {
                 glyph: b,
-                fg: 8, // dark gray
+                fg: 8,
                 bg: 0,
             };
         }

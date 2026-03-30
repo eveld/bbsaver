@@ -3,7 +3,7 @@ struct Uniforms {
     screen_size: vec2<f32>,    // window width, height in pixels
     cell_size: vec2<f32>,      // cell width, height in pixels
     scroll_offset: f32,        // fractional row offset for smooth scrolling
-    _padding: f32,
+    margin_left: f32,          // horizontal offset in pixels to center art
 }
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
@@ -56,8 +56,8 @@ fn vs_main(
 
     let pos = positions[vertex_index];
 
-    // Cell position in pixels
-    let cell_x = f32(instance.grid_pos.x) * uniforms.cell_size.x;
+    // Cell position in pixels (offset by margin to center art)
+    let cell_x = f32(instance.grid_pos.x) * uniforms.cell_size.x + uniforms.margin_left;
     let cell_y = (f32(instance.grid_pos.y) - uniforms.scroll_offset) * uniforms.cell_size.y;
 
     // Pixel position of this vertex within the cell

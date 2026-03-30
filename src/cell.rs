@@ -14,9 +14,14 @@ impl Cell {
     };
 }
 
-/// A row of 80 cells.
-pub type Row = [Cell; 80];
+/// A row of cells with variable width.
+pub type Row = Vec<Cell>;
 
-pub fn blank_row() -> Row {
-    [Cell::BLANK; 80]
+pub fn blank_row(cols: usize) -> Row {
+    vec![Cell::BLANK; cols]
+}
+
+/// Pad or truncate a row to a target width.
+pub fn resize_row(row: &mut Row, cols: usize) {
+    row.resize(cols, Cell::BLANK);
 }

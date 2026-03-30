@@ -16,7 +16,7 @@ struct Uniforms {
     screen_size: [f32; 2],
     cell_size: [f32; 2],
     scroll_offset: f32,
-    _padding: f32,
+    margin_left: f32,
 }
 
 pub struct Renderer {
@@ -45,8 +45,8 @@ impl Renderer {
             mapped_at_creation: false,
         });
 
-        // Pre-allocate instance buffer for up to 80 * 100 cells (100 visible rows)
-        let max_instances = 80 * 100;
+        // Pre-allocate instance buffer for up to 160 * 100 cells (wide art, 100 visible rows)
+        let max_instances = 160 * 100;
         let instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("instances"),
             size: (max_instances * std::mem::size_of::<GpuInstance>()) as u64,
@@ -172,27 +172,43 @@ impl Renderer {
         }
     }
 
-    /// Calculate cell size in pixels so 80 columns fill the window width,
-    /// preserving the 8:16 (1:2) aspect ratio of VGA glyphs.
-    pub fn cell_size(window_width: u32, _window_height: u32) -> (f32, f32) {
-        let cell_w = window_width as f32 / 80.0;
-        let cell_h = cell_w * 2.0; // 8:16 aspect ratio
-        (cell_w, cell_h)
+    /// Calculate cell size and horizontal margin.
+    /// Sizes cells so the art fills the screen height, then centers horizontally.
+    /// Returns (cell_w, cell_h, margin_left).
+    pub fn layout(window_width: u32, window_height: u32, cols: usize) -> (f32, f32, f32) {
+        let cols_f = cols as f32;
+        // Target ~40 visible rows to determine cell height from window height
+        let target_rows = 40.0;
+        let cell_h = window_height as f32 / target_rows;
+        let cell_w = cell_h / 2.0; // 8:16 aspect ratio
+
+        // If art would be wider than window, fall back to width-based sizing
+        let art_width = cell_w * cols_f;
+        if art_width > window_width as f32 {
+            let cell_w = window_width as f32 / cols_f;
+            let cell_h = cell_w * 2.0;
+            return (cell_w, cell_h, 0.0);
+        }
+
+        let margin_left = (window_width as f32 - art_width) / 2.0;
+        (cell_w, cell_h, margin_left)
     }
 
     /// How many rows fit in the viewport.
-    pub fn viewport_rows(window_width: u32, window_height: u32) -> usize {
-        let (_, cell_h) = Self::cell_size(window_width, window_height);
+    pub fn viewport_rows(window_width: u32, window_height: u32, cols: usize) -> usize {
+        let (_, cell_h, _) = Self::layout(window_width, window_height, cols);
         (window_height as f32 / cell_h).ceil() as usize + 1
     }
 
     /// Render visible rows of the row buffer.
+    #[allow(clippy::too_many_arguments)]
     pub fn render(
         &self,
         queue: &wgpu::Queue,
         view: &wgpu::TextureView,
         encoder: &mut wgpu::CommandEncoder,
         rows: &[Row],
+        cols: usize,
         scroll_offset: f64,
         window_size: [u32; 2],
     ) {
@@ -200,14 +216,14 @@ impl Renderer {
             return;
         }
 
-        let (cell_w, cell_h) = Self::cell_size(window_size[0], window_size[1]);
-        let viewport_rows = Self::viewport_rows(window_size[0], window_size[1]);
+        let (cell_w, cell_h, margin_left) = Self::layout(window_size[0], window_size[1], cols);
+        let viewport_rows = Self::viewport_rows(window_size[0], window_size[1], cols);
 
         let first_row = scroll_offset.floor() as usize;
         let frac = scroll_offset - scroll_offset.floor();
 
         // Build instance data for visible cells
-        let mut instances = Vec::with_capacity(viewport_rows * 80);
+        let mut instances = Vec::with_capacity(viewport_rows * cols);
         for i in 0..viewport_rows {
             let row_idx = (first_row + i) % rows.len();
             let row = &rows[row_idx];
@@ -227,7 +243,7 @@ impl Renderer {
             screen_size: [window_size[0] as f32, window_size[1] as f32],
             cell_size: [cell_w, cell_h],
             scroll_offset: frac as f32,
-            _padding: 0.0,
+            margin_left,
         };
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
 
