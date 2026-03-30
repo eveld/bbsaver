@@ -37,6 +37,10 @@ struct Cli {
     /// Launch in fullscreen mode
     #[arg(long)]
     fullscreen: bool,
+
+    /// Smooth sub-pixel scrolling instead of row-by-row stepping
+    #[arg(long)]
+    smooth: bool,
 }
 
 struct App {
@@ -45,9 +49,11 @@ struct App {
     renderer: Option<Renderer>,
     rows: Vec<Row>,
     scroll_offset: f64,
+    row_accumulator: f64,
     rows_per_sec: f64,
     last_frame: Option<Instant>,
     fullscreen: bool,
+    smooth: bool,
     pack: String,
 }
 
@@ -59,7 +65,7 @@ struct GpuState {
 }
 
 impl App {
-    fn new(pack: String, baud: u32, fullscreen: bool) -> Self {
+    fn new(pack: String, baud: u32, fullscreen: bool, smooth: bool) -> Self {
         let rows_per_sec = baud as f64 / 10.0 / 80.0;
         Self {
             window: None,
@@ -67,9 +73,11 @@ impl App {
             renderer: None,
             rows: Vec::new(),
             scroll_offset: 0.0,
+            row_accumulator: 0.0,
             rows_per_sec,
             last_frame: None,
             fullscreen,
+            smooth,
             pack,
         }
     }
@@ -140,8 +148,16 @@ impl ApplicationHandler for App {
                     self.last_frame = Some(now);
 
                     if !self.rows.is_empty() {
-                        self.scroll_offset += elapsed * self.rows_per_sec;
                         let total = self.rows.len() as f64;
+                        if self.smooth {
+                            self.scroll_offset += elapsed * self.rows_per_sec;
+                        } else {
+                            // Step whole rows: accumulate time, advance when a full row is due
+                            self.row_accumulator += elapsed * self.rows_per_sec;
+                            let steps = self.row_accumulator.floor();
+                            self.scroll_offset += steps;
+                            self.row_accumulator -= steps;
+                        }
                         if self.scroll_offset >= total {
                             self.scroll_offset -= total;
                         }
@@ -259,6 +275,6 @@ fn main() {
     let cli = Cli::parse();
 
     let event_loop = EventLoop::new().unwrap();
-    let mut app = App::new(cli.pack, cli.baud, cli.fullscreen);
+    let mut app = App::new(cli.pack, cli.baud, cli.fullscreen, cli.smooth);
     event_loop.run_app(&mut app).unwrap();
 }
