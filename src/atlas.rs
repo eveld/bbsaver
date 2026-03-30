@@ -34,6 +34,7 @@ impl FontAtlasRegistry {
     }
 
     /// Look up a font atlas by SAUCE font name. Falls back to IBM VGA.
+    #[allow(dead_code)]
     pub fn get(&self, font_name: &str) -> &FontAtlas {
         let key = if font_name.is_empty() {
             &self.default_key

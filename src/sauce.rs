@@ -1,5 +1,6 @@
 /// SAUCE (Standard Architecture for Universal Comment Extensions) metadata.
 /// 128-byte record appended to the end of ANSI art files.
+#[allow(dead_code)]
 pub struct SauceRecord {
     pub title: String,
     pub author: String,
@@ -64,5 +65,5 @@ fn cp437_string(bytes: &[u8]) -> String {
     use crate::cp437::CP437_TO_UNICODE;
 
     let s: String = bytes.iter().map(|&b| CP437_TO_UNICODE[b as usize]).collect();
-    s.trim_end_matches(|c: char| c == ' ' || c == '\0').to_string()
+    s.trim_end_matches([' ', '\0']).to_string()
 }

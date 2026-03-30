@@ -47,7 +47,7 @@ pub fn parse_ansi(data: &[u8]) -> Vec<Row> {
                 } else if byte == b';' {
                     params.push(current_param.unwrap_or(0));
                     current_param = None;
-                } else if byte >= 0x40 && byte <= 0x7E {
+                } else if (0x40..=0x7E).contains(&byte) {
                     // Final byte: dispatch the command
                     params.push(current_param.unwrap_or(0));
                     canvas.dispatch_csi(byte, &params);

@@ -242,14 +242,12 @@ fn render_frame(gpu: &GpuState, renderer: &Renderer, rows: &[Row], scroll_offset
         });
 
     renderer.render(
-        &gpu.device,
         &gpu.queue,
         &view,
         &mut encoder,
         rows,
         scroll_offset,
-        gpu.config.width,
-        gpu.config.height,
+        [gpu.config.width, gpu.config.height],
     );
 
     gpu.queue.submit(std::iter::once(encoder.finish()));

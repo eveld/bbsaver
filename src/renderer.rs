@@ -24,7 +24,6 @@ pub struct Renderer {
     uniform_buffer: wgpu::Buffer,
     instance_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
-    surface_format: wgpu::TextureFormat,
     max_instances: usize,
 }
 
@@ -169,7 +168,6 @@ impl Renderer {
             uniform_buffer,
             instance_buffer,
             bind_group,
-            surface_format,
             max_instances,
         }
     }
@@ -191,21 +189,19 @@ impl Renderer {
     /// Render visible rows of the row buffer.
     pub fn render(
         &self,
-        _device: &wgpu::Device,
         queue: &wgpu::Queue,
         view: &wgpu::TextureView,
         encoder: &mut wgpu::CommandEncoder,
         rows: &[Row],
         scroll_offset: f64,
-        window_width: u32,
-        window_height: u32,
+        window_size: [u32; 2],
     ) {
         if rows.is_empty() {
             return;
         }
 
-        let (cell_w, cell_h) = Self::cell_size(window_width, window_height);
-        let viewport_rows = Self::viewport_rows(window_width, window_height);
+        let (cell_w, cell_h) = Self::cell_size(window_size[0], window_size[1]);
+        let viewport_rows = Self::viewport_rows(window_size[0], window_size[1]);
 
         let first_row = scroll_offset.floor() as usize;
         let frac = scroll_offset - scroll_offset.floor();
@@ -228,7 +224,7 @@ impl Renderer {
 
         // Update uniforms
         let uniforms = Uniforms {
-            screen_size: [window_width as f32, window_height as f32],
+            screen_size: [window_size[0] as f32, window_size[1] as f32],
             cell_size: [cell_w, cell_h],
             scroll_offset: frac as f32,
             _padding: 0.0,

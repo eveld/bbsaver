@@ -83,7 +83,7 @@ fn load_zip(path: &Path) -> Vec<ArtFile> {
         })
         .collect();
 
-    names.sort_by(|a, b| a.to_ascii_lowercase().cmp(&b.to_ascii_lowercase()));
+    names.sort_by_key(|a| a.to_ascii_lowercase());
 
     let mut files = Vec::new();
     let mut total_bytes: u64 = 0;
@@ -146,7 +146,7 @@ fn parse_art_file(filename: String, data: Vec<u8>) -> ArtFile {
     rows.drain(..first_nonblank);
 
     // Trim trailing blank rows
-    while rows.last().map_or(false, |r| is_blank_row(r)) {
+    while rows.last().is_some_and(is_blank_row) {
         rows.pop();
     }
 
