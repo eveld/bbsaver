@@ -13,7 +13,7 @@ bbsaver --pack /path/to/artpack/
 # From a ZIP file
 bbsaver --pack /path/to/artpack.zip
 
-# From a URL
+# From a URL (downloads automatically)
 bbsaver --pack https://raw.githubusercontent.com/sixteencolors/sixteencolors-archive/master/1996/acid-50a.zip
 
 # Adjust speed (default: 9600 baud)
@@ -22,9 +22,22 @@ bbsaver --pack /path/to/pack --baud 2400
 # Fullscreen
 bbsaver --pack /path/to/pack --fullscreen
 
+# Fullscreen on all monitors
+bbsaver --pack /path/to/pack --fullscreen --all-monitors
+
 # Smooth scrolling instead of row-by-row stepping
 bbsaver --pack /path/to/pack --smooth
 ```
+
+### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--pack <path\|url>` | Path to art pack directory, ZIP file, or URL (required) |
+| `--baud <rate>` | Simulated baud rate (default: 9600) |
+| `--fullscreen` | Launch in fullscreen mode |
+| `--all-monitors` | Show on all connected monitors (requires `--fullscreen`) |
+| `--smooth` | Smooth sub-pixel scrolling instead of row-by-row stepping |
 
 ### Baud rates
 
@@ -72,11 +85,22 @@ Download packs from [16colo.rs](https://16colo.rs/) or the [GitHub archive](http
 mkdir -p ~/.local/share/bbsaver/packs
 cd ~/.local/share/bbsaver/packs
 
-# Grab some packs
+# Classic ACiD Productions
 curl -sLO https://raw.githubusercontent.com/sixteencolors/sixteencolors-archive/master/1996/acid-50a.zip
 curl -sLO https://raw.githubusercontent.com/sixteencolors/sixteencolors-archive/master/1996/acid-52.zip
-curl -sLO https://raw.githubusercontent.com/sixteencolors/sixteencolors-archive/master/1997/ice-9710.zip
+
+# Blocktronics (modern ANSI art group)
+curl -sLO https://raw.githubusercontent.com/sixteencolors/sixteencolors-archive/master/2016/blocktronics_block_n_roll.zip
+curl -sLO https://raw.githubusercontent.com/sixteencolors/sixteencolors-archive/master/2013/BLOCKTRONICS_SPACE_INVADERS.zip
 ```
+
+Supports variable-width art -- packs with mixed 80/160/210 column files render correctly with narrower pieces centered.
+
+## Multi-monitor
+
+With `--fullscreen --all-monitors`, bbsaver opens a window on every connected display. Each window renders at its monitor's native resolution with the art centered and scaled to fill the height. All monitors scroll in sync.
+
+The art is always centered horizontally, so ultrawide monitors get black bars on the sides rather than stretched characters.
 
 ## Screensaver setup
 
@@ -87,7 +111,7 @@ Add to `~/.config/hypr/hypridle.conf`:
 ```
 listener {
     timeout = 150
-    on-timeout = bbsaver --fullscreen --pack ~/.local/share/bbsaver/packs/acid-50a.zip
+    on-timeout = bbsaver --fullscreen --all-monitors --pack ~/.local/share/bbsaver/packs/acid-50a.zip
     on-resume = pkill bbsaver
 }
 
@@ -108,7 +132,7 @@ Noctalia has built-in idle management. Edit `~/.config/noctalia/settings.json`:
     "screenOffTimeout": 150,
     "lockTimeout": 300,
     "suspendTimeout": 1800,
-    "screenOffCommand": "bbsaver --fullscreen --pack ~/.local/share/bbsaver/packs/acid-50a.zip",
+    "screenOffCommand": "bbsaver --fullscreen --all-monitors --pack ~/.local/share/bbsaver/packs/acid-50a.zip",
     "resumeScreenOffCommand": "pkill bbsaver"
   }
 }
@@ -118,7 +142,7 @@ Noctalia has built-in idle management. Edit `~/.config/noctalia/settings.json`:
 
 ```sh
 swayidle -w \
-    timeout 150 'bbsaver --fullscreen --pack ~/.local/share/bbsaver/packs/acid-50a.zip' \
+    timeout 150 'bbsaver --fullscreen --all-monitors --pack ~/.local/share/bbsaver/packs/acid-50a.zip' \
     resume 'pkill bbsaver' \
     timeout 300 'swaylock'
 ```
@@ -129,16 +153,19 @@ Add to `~/.config/sway/config`:
 
 ```
 exec swayidle -w \
-    timeout 150 'bbsaver --fullscreen --pack ~/.local/share/bbsaver/packs/acid-50a.zip' \
+    timeout 150 'bbsaver --fullscreen --all-monitors --pack ~/.local/share/bbsaver/packs/acid-50a.zip' \
     resume 'pkill bbsaver' \
     timeout 300 'swaylock -f'
 ```
 
 ## How it works
 
-1. Loads `.ANS` / `.ICE` files from an art pack (directory or ZIP)
-2. Parses each file through an ANSI state machine into a cell buffer (80 columns, variable height)
-3. Reads SAUCE metadata for attribution (title, author, group)
-4. Renders cells as GPU-instanced textured quads using an embedded IBM VGA 8x16 font atlas
-5. Scrolls through the buffer at the configured baud rate, with blank screen gaps between pieces
-6. Loops forever. Exits cleanly on Escape, window close, or SIGTERM.
+1. Loads `.ANS` / `.ICE` files from an art pack (directory, ZIP, or URL)
+2. Reads SAUCE metadata for canvas width (supports 80, 160, 210+ columns) and attribution
+3. Parses each file through an ANSI state machine into a cell buffer
+4. Centers narrower files within the widest file's column count
+5. Renders cells as GPU-instanced textured quads using an embedded IBM VGA 8x16 font atlas
+6. Scales art to fill screen height, centers horizontally (no stretching on ultrawide)
+7. Scrolls row-by-row at the configured baud rate, with full-screen gaps between pieces
+8. On all monitors: each window renders at native resolution, all synced to the same scroll position
+9. Loops forever. Exits cleanly on Escape, window close, or SIGTERM.
