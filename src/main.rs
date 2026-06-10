@@ -80,6 +80,7 @@ struct App {
     all_monitors: bool,
     pack: String,
     initialized: bool,
+    started_at: Option<Instant>,
 }
 
 impl App {
@@ -101,6 +102,7 @@ impl App {
             all_monitors,
             pack,
             initialized: false,
+            started_at: None,
         }
     }
 }
@@ -203,7 +205,9 @@ impl ApplicationHandler for App {
             self.rows_per_sec
         );
 
-        self.last_frame = Some(Instant::now());
+        let now = Instant::now();
+        self.last_frame = Some(now);
+        self.started_at = Some(now);
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
@@ -211,11 +215,11 @@ impl ApplicationHandler for App {
             WindowEvent::CloseRequested => {
                 event_loop.exit();
             }
-            WindowEvent::KeyboardInput { event, .. } => {
-                if event.state.is_pressed() {
-                    if let Key::Named(NamedKey::Escape) = event.logical_key {
-                        event_loop.exit();
-                    }
+            WindowEvent::KeyboardInput { .. }
+            | WindowEvent::MouseInput { .. }
+            | WindowEvent::CursorMoved { .. } => {
+                if self.started_at.is_some_and(|t| t.elapsed().as_secs() >= 1) {
+                    event_loop.exit();
                 }
             }
             WindowEvent::Resized(new_size) => {
