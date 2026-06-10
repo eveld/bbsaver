@@ -17,7 +17,6 @@ use clap::Parser;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
-use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
 
 use cell::Row;
@@ -217,10 +216,10 @@ impl ApplicationHandler for App {
             }
             WindowEvent::KeyboardInput { .. }
             | WindowEvent::MouseInput { .. }
-            | WindowEvent::CursorMoved { .. } => {
-                if self.started_at.is_some_and(|t| t.elapsed().as_secs() >= 1) {
-                    event_loop.exit();
-                }
+            | WindowEvent::CursorMoved { .. }
+                if self.started_at.is_some_and(|t| t.elapsed().as_secs() >= 1) =>
+            {
+                event_loop.exit();
             }
             WindowEvent::Resized(new_size) => {
                 if let Some(ws) = self.windows.get_mut(&id) {
