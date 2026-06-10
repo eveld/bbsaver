@@ -27,6 +27,9 @@ bbsaver --pack /path/to/pack --fullscreen --all-monitors
 
 # Smooth scrolling instead of row-by-row stepping
 bbsaver --pack /path/to/pack --smooth
+
+# Daemon mode: activate after 5 minutes of idle (Wayland only)
+bbsaver --timeout 300 --pack /path/to/pack
 ```
 
 ### Flags
@@ -38,6 +41,7 @@ bbsaver --pack /path/to/pack --smooth
 | `--fullscreen` | Launch in fullscreen mode |
 | `--all-monitors` | Show on all connected monitors (requires `--fullscreen`) |
 | `--smooth` | Smooth sub-pixel scrolling instead of row-by-row stepping |
+| `--timeout <seconds>` | Run as daemon, activating after idle timeout (implies `--fullscreen --all-monitors`, Wayland only) |
 
 ### Baud rates
 
@@ -102,43 +106,31 @@ With `--fullscreen --all-monitors`, bbsaver opens a window on every connected di
 
 The art is always centered horizontally, so ultrawide monitors get black bars on the sides rather than stretched characters.
 
+## Daemon mode
+
+With `--timeout <seconds>`, bbsaver runs as a persistent daemon that listens for Wayland idle events via the `ext-idle-notify-v1` protocol. When the user has been idle for the specified duration, fullscreen windows appear on all monitors. Any keypress, mouse click, or mouse movement dismisses the screensaver and returns to waiting. GPU state and art pack data are cached across cycles.
+
+This removes the need for an external idle manager like swayidle.
+
 ## Screensaver setup
 
-### Hyprland (Omarchy / CachyOS Hyprland)
+### Niri (daemon mode, recommended)
 
-Add to `~/.config/hypr/hypridle.conf`:
+Add to `~/.config/niri/config.kdl`:
 
-```
-listener {
-    timeout = 150
-    on-timeout = bbsaver --fullscreen --all-monitors --pack ~/.local/share/bbsaver/packs/acid-50a.zip
-    on-resume = pkill bbsaver
-}
-
-listener {
-    timeout = 300
-    on-timeout = hyprlock
-}
+```kdl
+spawn-at-startup "bbsaver" "--timeout" "300" "--pack" "/path/to/artpack.zip"
 ```
 
-### Niri + Noctalia Shell
+### Hyprland (daemon mode)
 
-Noctalia has built-in idle management. Edit `~/.config/noctalia/settings.json`:
+Add to `~/.config/hypr/hyprland.conf`:
 
-```json
-{
-  "idle": {
-    "enabled": true,
-    "screenOffTimeout": 150,
-    "lockTimeout": 300,
-    "suspendTimeout": 1800,
-    "screenOffCommand": "bbsaver --fullscreen --all-monitors --pack ~/.local/share/bbsaver/packs/acid-50a.zip",
-    "resumeScreenOffCommand": "pkill bbsaver"
-  }
-}
+```
+exec-once = bbsaver --timeout 300 --pack ~/.local/share/bbsaver/packs/acid-50a.zip
 ```
 
-### Niri + swayidle (without Noctalia)
+### Niri + swayidle (without daemon mode)
 
 ```sh
 swayidle -w \
@@ -168,4 +160,5 @@ exec swayidle -w \
 6. Scales art to fill screen height, centers horizontally (no stretching on ultrawide)
 7. Scrolls row-by-row at the configured baud rate, with full-screen gaps between pieces
 8. On all monitors: each window renders at native resolution, all synced to the same scroll position
-9. Loops forever. Exits cleanly on Escape, window close, or SIGTERM.
+9. In one-shot mode: exits on any input, Escape, window close, or SIGTERM
+10. In daemon mode: dismisses on any input and waits for the next idle timeout
