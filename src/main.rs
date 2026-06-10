@@ -2,6 +2,8 @@ mod ansi;
 mod atlas;
 mod cell;
 mod cp437;
+#[cfg(unix)]
+mod idle;
 mod pack;
 mod renderer;
 mod sauce;
@@ -19,8 +21,15 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowId};
 
+use atlas::FontAtlasRegistry;
 use cell::Row;
 use renderer::Renderer;
+
+#[derive(Debug)]
+pub enum UserEvent {
+    Idle,
+    Resumed,
+}
 
 #[derive(Parser)]
 #[command(name = "bbsaver", about = "ANSI art pack screensaver")]
@@ -44,6 +53,10 @@ struct Cli {
     /// Show on all monitors (only with --fullscreen)
     #[arg(long)]
     all_monitors: bool,
+
+    /// Run as daemon, activating after SECONDS of idle (implies --fullscreen --all-monitors)
+    #[arg(long, value_name = "SECONDS")]
+    timeout: Option<u32>,
 }
 
 /// Per-window state (each monitor gets one).
@@ -55,14 +68,15 @@ struct WindowState {
 }
 
 struct App {
-    // Shared GPU state
+    // Persistent GPU state (survives activate/deactivate cycles)
     device: Option<wgpu::Device>,
     queue: Option<wgpu::Queue>,
+    atlas: Option<FontAtlasRegistry>,
 
-    // Per-window state
+    // Per-window state (cleared on deactivate)
     windows: HashMap<WindowId, WindowState>,
 
-    // Shared content
+    // Shared content (loaded once, cached)
     rows: Vec<Row>,
     cols: usize,
     reference_width: u32,
@@ -78,105 +92,45 @@ struct App {
     smooth: bool,
     all_monitors: bool,
     pack: String,
-    initialized: bool,
+    daemon: bool,
     started_at: Option<Instant>,
 }
 
 impl App {
-    fn new(pack: String, baud: u32, fullscreen: bool, smooth: bool, all_monitors: bool) -> Self {
-        let rows_per_sec = baud as f64 / 10.0 / 80.0;
+    fn new(cli: &Cli) -> Self {
+        let daemon = cli.timeout.is_some();
         Self {
             device: None,
             queue: None,
+            atlas: None,
             windows: HashMap::new(),
             rows: Vec::new(),
             cols: 80,
             reference_width: 0,
             scroll_offset: 0.0,
             row_accumulator: 0.0,
-            rows_per_sec,
+            rows_per_sec: cli.baud as f64 / 10.0 / 80.0,
             last_frame: None,
-            fullscreen,
-            smooth,
-            all_monitors,
-            pack,
-            initialized: false,
+            fullscreen: daemon || cli.fullscreen,
+            smooth: cli.smooth,
+            all_monitors: daemon || cli.all_monitors,
+            pack: cli.pack.clone(),
+            daemon,
             started_at: None,
         }
     }
-}
 
-impl ApplicationHandler for App {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.initialized {
-            return;
-        }
-        self.initialized = true;
-
-        // Create GPU instance and adapter (shared across all windows)
+    fn activate(&mut self, event_loop: &ActiveEventLoop) {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
 
-        if self.fullscreen && self.all_monitors {
-            // One fullscreen window per monitor
-            let monitors: Vec<_> = event_loop.available_monitors().collect();
-            let mut windows = Vec::new();
-            for monitor in &monitors {
-                let window = Arc::new(
-                    event_loop
-                        .create_window(
-                            Window::default_attributes()
-                                .with_title("bbsaver")
-                                .with_fullscreen(Some(
-                                    winit::window::Fullscreen::Borderless(Some(monitor.clone())),
-                                )),
-                        )
-                        .unwrap(),
-                );
-                windows.push(window);
-            }
-            if windows.is_empty() {
-                // Fallback: single borderless fullscreen
-                windows.push(Arc::new(
-                    event_loop
-                        .create_window(
-                            Window::default_attributes()
-                                .with_title("bbsaver")
-                                .with_fullscreen(Some(
-                                    winit::window::Fullscreen::Borderless(None),
-                                )),
-                        )
-                        .unwrap(),
-                ));
-            }
-            self.init_gpu_and_windows(&instance, windows);
-        } else if self.fullscreen {
-            // Single fullscreen window on primary monitor
-            let window = Arc::new(
-                event_loop
-                    .create_window(
-                        Window::default_attributes()
-                            .with_title("bbsaver")
-                            .with_fullscreen(Some(winit::window::Fullscreen::Borderless(None))),
-                    )
-                    .unwrap(),
-            );
-            self.init_gpu_and_windows(&instance, vec![window]);
-        } else {
-            // Single windowed mode
-            let window = Arc::new(
-                event_loop
-                    .create_window(
-                        Window::default_attributes()
-                            .with_title("bbsaver")
-                            .with_inner_size(winit::dpi::LogicalSize::new(800, 600)),
-                    )
-                    .unwrap(),
-            );
-            self.init_gpu_and_windows(&instance, vec![window]);
+        let windows = self.create_windows(event_loop);
+
+        if self.device.is_none() {
+            self.init_gpu(&instance, &windows);
         }
 
-        // Cell size is derived from the narrowest screen so art fills it edge-to-edge.
-        // Wider screens get centered black bars.
+        self.init_windows(&instance, windows);
+
         self.reference_width = self
             .windows
             .values()
@@ -184,17 +138,18 @@ impl ApplicationHandler for App {
             .min()
             .unwrap_or(800);
 
-        // For pack loading, use the tallest screen's height to ensure enough rows
-        let max_height = self
-            .windows
-            .values()
-            .map(|ws| ws.config.height)
-            .max()
-            .unwrap_or(600);
-        let viewport_rows = Renderer::viewport_rows(max_height, self.reference_width, 80);
-        let pack_data = pack::load_pack(&self.pack, viewport_rows);
-        self.rows = pack_data.rows;
-        self.cols = pack_data.cols;
+        if self.rows.is_empty() {
+            let max_height = self
+                .windows
+                .values()
+                .map(|ws| ws.config.height)
+                .max()
+                .unwrap_or(600);
+            let viewport_rows = Renderer::viewport_rows(max_height, self.reference_width, 80);
+            let pack_data = pack::load_pack(&self.pack, viewport_rows);
+            self.rows = pack_data.rows;
+            self.cols = pack_data.cols;
+        }
 
         eprintln!(
             "{} monitor(s), {} rows, {} cols, rows/sec={:.1}",
@@ -204,22 +159,183 @@ impl ApplicationHandler for App {
             self.rows_per_sec
         );
 
+        self.scroll_offset = 0.0;
+        self.row_accumulator = 0.0;
         let now = Instant::now();
         self.last_frame = Some(now);
         self.started_at = Some(now);
     }
 
+    fn deactivate(&mut self) {
+        self.windows.clear();
+        self.started_at = None;
+        self.last_frame = None;
+    }
+
+    fn create_windows(&self, event_loop: &ActiveEventLoop) -> Vec<Arc<Window>> {
+        if self.fullscreen && self.all_monitors {
+            let monitors: Vec<_> = event_loop.available_monitors().collect();
+            let mut windows = Vec::new();
+            for monitor in &monitors {
+                let window = Arc::new(
+                    event_loop
+                        .create_window(
+                            Window::default_attributes()
+                                .with_title("bbsaver")
+                                .with_fullscreen(Some(winit::window::Fullscreen::Borderless(
+                                    Some(monitor.clone()),
+                                ))),
+                        )
+                        .unwrap(),
+                );
+                windows.push(window);
+            }
+            if windows.is_empty() {
+                windows.push(Arc::new(
+                    event_loop
+                        .create_window(
+                            Window::default_attributes()
+                                .with_title("bbsaver")
+                                .with_fullscreen(Some(winit::window::Fullscreen::Borderless(None))),
+                        )
+                        .unwrap(),
+                ));
+            }
+            windows
+        } else if self.fullscreen {
+            vec![Arc::new(
+                event_loop
+                    .create_window(
+                        Window::default_attributes()
+                            .with_title("bbsaver")
+                            .with_fullscreen(Some(winit::window::Fullscreen::Borderless(None))),
+                    )
+                    .unwrap(),
+            )]
+        } else {
+            vec![Arc::new(
+                event_loop
+                    .create_window(
+                        Window::default_attributes()
+                            .with_title("bbsaver")
+                            .with_inner_size(winit::dpi::LogicalSize::new(800, 600)),
+                    )
+                    .unwrap(),
+            )]
+        }
+    }
+
+    fn init_gpu(&mut self, instance: &wgpu::Instance, windows: &[Arc<Window>]) {
+        let surface = instance.create_surface(windows[0].clone()).unwrap();
+
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::default(),
+            compatible_surface: Some(&surface),
+            force_fallback_adapter: false,
+        }))
+        .unwrap();
+
+        let (device, queue) = pollster::block_on(adapter.request_device(
+            &wgpu::DeviceDescriptor {
+                label: Some("bbsaver"),
+                required_features: wgpu::Features::empty(),
+                required_limits: wgpu::Limits::default(),
+                ..Default::default()
+            },
+        ))
+        .unwrap();
+
+        let atlas = FontAtlasRegistry::new(&device, &queue);
+
+        self.device = Some(device);
+        self.queue = Some(queue);
+        self.atlas = Some(atlas);
+    }
+
+    fn init_windows(&mut self, instance: &wgpu::Instance, windows: Vec<Arc<Window>>) {
+        let device = self.device.as_ref().unwrap();
+        let atlas = self.atlas.as_ref().unwrap();
+
+        for window in &windows {
+            let surface = instance.create_surface(window.clone()).unwrap();
+            let size = window.inner_size();
+
+            let adapter =
+                pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                    power_preference: wgpu::PowerPreference::default(),
+                    compatible_surface: Some(&surface),
+                    force_fallback_adapter: false,
+                }))
+                .unwrap();
+
+            let caps = surface.get_capabilities(&adapter);
+            let format = caps.formats[0];
+
+            let config = wgpu::SurfaceConfiguration {
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                format,
+                width: size.width,
+                height: size.height,
+                present_mode: wgpu::PresentMode::AutoVsync,
+                alpha_mode: caps.alpha_modes[0],
+                view_formats: vec![],
+                desired_maximum_frame_latency: 2,
+            };
+            surface.configure(device, &config);
+
+            let renderer = Renderer::new(device, format, atlas.default());
+
+            self.windows.insert(
+                window.id(),
+                WindowState {
+                    window: window.clone(),
+                    surface,
+                    config,
+                    renderer,
+                },
+            );
+        }
+    }
+}
+
+impl ApplicationHandler<UserEvent> for App {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if !self.daemon && self.windows.is_empty() {
+            self.activate(event_loop);
+        }
+    }
+
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
+        match event {
+            UserEvent::Idle if self.windows.is_empty() => {
+                self.activate(event_loop);
+            }
+            UserEvent::Resumed if !self.windows.is_empty() && self.daemon => {
+                self.deactivate();
+            }
+            _ => {}
+        }
+    }
+
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
         match event {
             WindowEvent::CloseRequested => {
-                event_loop.exit();
+                if self.daemon {
+                    self.deactivate();
+                } else {
+                    event_loop.exit();
+                }
             }
             WindowEvent::KeyboardInput { .. }
             | WindowEvent::MouseInput { .. }
             | WindowEvent::CursorMoved { .. }
                 if self.started_at.is_some_and(|t| t.elapsed().as_secs() >= 1) =>
             {
-                event_loop.exit();
+                if self.daemon {
+                    self.deactivate();
+                } else {
+                    event_loop.exit();
+                }
             }
             WindowEvent::Resized(new_size) => {
                 if let Some(ws) = self.windows.get_mut(&id) {
@@ -238,7 +354,6 @@ impl ApplicationHandler for App {
                     return;
                 }
 
-                // Only advance scroll once per frame (first window to request redraw)
                 if let Some(first_id) = self.windows.keys().next().copied() {
                     if id == first_id {
                         if let Some(last) = self.last_frame {
@@ -264,7 +379,6 @@ impl ApplicationHandler for App {
                     }
                 }
 
-                // Render this window
                 if let (Some(device), Some(queue), Some(ws)) =
                     (&self.device, &self.queue, self.windows.get(&id))
                 {
@@ -279,85 +393,12 @@ impl ApplicationHandler for App {
                     );
                 }
 
-                // Request redraw on all windows
                 for ws in self.windows.values() {
                     ws.window.request_redraw();
                 }
             }
             _ => {}
         }
-    }
-}
-
-impl App {
-    fn init_gpu_and_windows(
-        &mut self,
-        instance: &wgpu::Instance,
-        windows: Vec<Arc<Window>>,
-    ) {
-        // Create surface from first window to find a compatible adapter
-        let first_surface = instance.create_surface(windows[0].clone()).unwrap();
-
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::default(),
-            compatible_surface: Some(&first_surface),
-            force_fallback_adapter: false,
-        }))
-        .unwrap();
-
-        let (device, queue) = pollster::block_on(adapter.request_device(
-            &wgpu::DeviceDescriptor {
-                label: Some("bbsaver"),
-                required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::default(),
-                ..Default::default()
-            },
-        ))
-        .unwrap();
-
-        let registry = atlas::FontAtlasRegistry::new(&device, &queue);
-
-        // Set up each window. We already created first_surface, so consume it for window 0
-        // and create new surfaces for the rest.
-        let mut first_surface = Some(first_surface);
-        for (i, window) in windows.iter().enumerate() {
-            let surface = if i == 0 {
-                first_surface.take().unwrap()
-            } else {
-                instance.create_surface(window.clone()).unwrap()
-            };
-
-            let size = window.inner_size();
-            let caps = surface.get_capabilities(&adapter);
-            let format = caps.formats[0];
-
-            let config = wgpu::SurfaceConfiguration {
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-                format,
-                width: size.width,
-                height: size.height,
-                present_mode: wgpu::PresentMode::AutoVsync,
-                alpha_mode: caps.alpha_modes[0],
-                view_formats: vec![],
-                desired_maximum_frame_latency: 2,
-            };
-            surface.configure(&device, &config);
-
-            let renderer = Renderer::new(&device, format, registry.default());
-
-            self.windows.insert(
-                window.id(),
-                WindowState {
-                    window: window.clone(),
-                    surface,
-                    config,
-                    renderer,
-                },
-            );
-        }
-
-        self.device = Some(device);
-        self.queue = Some(queue);
     }
 }
 
@@ -420,7 +461,13 @@ fn main() {
 
     let cli = Cli::parse();
 
-    let event_loop = EventLoop::new().unwrap();
-    let mut app = App::new(cli.pack, cli.baud, cli.fullscreen, cli.smooth, cli.all_monitors);
+    let event_loop = EventLoop::<UserEvent>::with_user_event().build().unwrap();
+
+    #[cfg(unix)]
+    if let Some(timeout) = cli.timeout {
+        idle::start(timeout, event_loop.create_proxy());
+    }
+
+    let mut app = App::new(&cli);
     event_loop.run_app(&mut app).unwrap();
 }

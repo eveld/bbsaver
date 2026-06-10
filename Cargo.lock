@@ -301,6 +301,8 @@ dependencies = [
  "pollster",
  "tempfile",
  "ureq",
+ "wayland-client",
+ "wayland-protocols",
  "wgpu",
  "winit",
  "zip",
